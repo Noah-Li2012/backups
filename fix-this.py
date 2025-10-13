@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
@@ -402,6 +403,8 @@ class ClipboardApp(QMainWindow):
         self.filter_text = ""
         self._show_anim_group = None
         self._hide_anim_group = None
+        self._last_toggle_at = 0.0
+        self._last_shown_at = 0.0
 
         self.default_settings_dir = os.path.expanduser("~/.clipboard_studio")
         self.default_settings_path = os.path.join(self.default_settings_dir, "settings.json")
@@ -699,13 +702,26 @@ class ClipboardApp(QMainWindow):
     def on_hotkey(self):
         # This is called from a non-Qt thread by pynput; emit a signal to toggle on the UI thread
         try:
+            now = time.monotonic()
+            # Debounce to prevent rapid double-trigger (press/release sequence)
+            if now - self._last_toggle_at < 0.35:
+                return
+            self._last_toggle_at = now
             self.toggleRequested.emit()
         except Exception as e:
             logging.error(f"Hotkey handler error: {e}")
 
     def toggle_window(self):
         try:
+            # Ignore toggles while animations are running
+            if self._show_anim_group is not None or self._hide_anim_group is not None:
+                return
+
+            now = time.monotonic()
             if self.isVisible():
+                # Prevent instant close caused by key release right after show
+                if now - self._last_shown_at < 0.35:
+                    return
                 self.hide_window()
             else:
                 self.show_window()
@@ -748,6 +764,11 @@ class ClipboardApp(QMainWindow):
             self._show_anim_group = None
         group.finished.connect(_clear_show)
         group.start()
+        # Record show time for toggle debounce
+        try:
+            self._last_shown_at = time.monotonic()
+        except Exception:
+            self._last_shown_at = 0.0
 
     def hide_window(self):
         # Smooth fade + slight slide-out
