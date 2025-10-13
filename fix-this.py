@@ -5,7 +5,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QLabel, QFileDialog, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
-    QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
+    QGraphicsDropShadowEffect, QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
     QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
@@ -314,10 +314,10 @@ class ClipboardApp(QMainWindow):
         self.layout.setContentsMargins(10, 10, 10, 10)
         self.layout.setSpacing(10)
 
-        top_bar = QWidget()
-        top_bar.setFixedHeight(40)
-        top_bar.setStyleSheet("background: transparent;")
-        top_layout = QHBoxLayout(top_bar)
+        self.top_bar = QWidget()
+        self.top_bar.setFixedHeight(44)
+        self.top_bar.setStyleSheet("background: transparent;")
+        top_layout = QHBoxLayout(self.top_bar)
         top_layout.setContentsMargins(10, 5, 10, 5)
         top_layout.setSpacing(10)
 
@@ -326,6 +326,22 @@ class ClipboardApp(QMainWindow):
         self.title.setStyleSheet("color: #FFFFFF;")
         top_layout.addWidget(self.title)
         top_layout.addStretch()
+
+        # Search field for quick filtering
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setFixedHeight(30)
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                border-radius: 6px;
+                padding: 4px 8px;
+                background: rgba(255,255,255,0.9);
+                color: #222;
+            }
+        """)
+        self.search_edit.textChanged.connect(self.set_filter)
+        top_layout.addWidget(self.search_edit)
 
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(30, 30)
@@ -337,7 +353,7 @@ class ClipboardApp(QMainWindow):
         self.close_btn.clicked.connect(self.hide_window)
         top_layout.addWidget(self.close_btn)
 
-        self.layout.addWidget(top_bar)
+        self.layout.addWidget(self.top_bar)
 
         self.clip_list = QListWidget()
         self.clip_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -383,6 +399,9 @@ class ClipboardApp(QMainWindow):
         self.clipboard.dataChanged.connect(self.save_clipboard)
 
         self.ignoring_clipboard_change = False
+        self.filter_text = ""
+        self._show_anim_group = None
+        self._hide_anim_group = None
 
         self.default_settings_dir = os.path.expanduser("~/.clipboard_studio")
         self.default_settings_path = os.path.join(self.default_settings_dir, "settings.json")
@@ -398,6 +417,17 @@ class ClipboardApp(QMainWindow):
         self.custom_color = settings.get("custom_color", "#1A237E")
         self.hotkey = settings.get("hotkey", "<ctrl>+<shift>+.")
         self.apply_theme(self.theme)
+
+        # Subtle drop shadow for a modern floating look
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(24)
+            shadow.setXOffset(0)
+            shadow.setYOffset(6)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            self.central_widget.setGraphicsEffect(shadow)
+        except Exception:
+            pass
 
         self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("edit-paste"), self)
         tray_menu = QMenu()
@@ -517,6 +547,8 @@ class ClipboardApp(QMainWindow):
                 self.ignoring_clipboard_change = True
                 self.clipboard.setText(text)
                 self.update_list()
+                # Auto-close after selection for quicker workflow
+                self.hide_window()
         except Exception as e:
             logging.error(f"Item click failed: {e}")
 
@@ -561,12 +593,25 @@ class ClipboardApp(QMainWindow):
 
     def update_list(self):
         self.clip_list.clear()
-        for text, file_path in self.all_clips[:self.max_visible]:
+        # Filter items by current query
+        try:
+            if self.filter_text:
+                filtered = [(t, p) for (t, p) in self.all_clips if self.filter_text in t.lower()]
+            else:
+                filtered = list(self.all_clips)
+        except Exception:
+            filtered = list(self.all_clips)
+
+        for text, file_path in filtered[:self.max_visible]:
             item_widget = ClipboardItemWidget(text, file_path, self.clip_list, app=self)
             item = QListWidgetItem()
             self.clip_list.addItem(item)
             self.clip_list.setItemWidget(item, item_widget)
             item.setSizeHint(item_widget.sizeHint())
+
+    def set_filter(self, query: str):
+        self.filter_text = (query or "").lower().strip()
+        self.update_list()
 
     def show_all(self):
         self.max_visible = len(self.all_clips)
@@ -604,6 +649,11 @@ class ClipboardApp(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start_color}, stop:1 {end_color});
                 border-radius: 15px;
             """)
+            self.top_bar.setStyleSheet(f"""
+                QWidget {{
+                    background: rgba(0,0,0,0);
+                }}
+            """)
             self.clip_list.setStyleSheet(f"""
                 QListWidget {{ 
                     background: rgba({background_alpha}); 
@@ -619,6 +669,16 @@ class ClipboardApp(QMainWindow):
                 QPushButton {{ background: transparent; color: {self.text_color}; border: none; }}
                 QPushButton:hover {{ color: #F44336; }}
             """)
+            # Harmonize search field with theme
+            if self.search_edit:
+                if theme == "light":
+                    self.search_edit.setStyleSheet("""
+                        QLineEdit { border-radius: 6px; padding: 4px 8px; background: rgba(255,255,255,0.95); color: #222; }
+                    """)
+                else:
+                    self.search_edit.setStyleSheet(f"""
+                        QLineEdit {{ border-radius: 6px; padding: 4px 8px; background: rgba(255,255,255,0.1); color: {self.text_color}; border: 1px solid {border_color}; }}
+                    """)
             self.update_list()  # Refresh list to apply theme to items
             logging.info(f"Applied theme: {theme}")
         except Exception as e:
@@ -672,9 +732,21 @@ class ClipboardApp(QMainWindow):
         pos_anim.setEndValue(orig_pos)
         pos_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
+        # Stop any running hide animation
+        try:
+            if self._hide_anim_group is not None:
+                self._hide_anim_group.stop()
+        except Exception:
+            pass
+        self._hide_anim_group = None
+
         group = QParallelAnimationGroup(self)
         group.addAnimation(opacity_anim)
         group.addAnimation(pos_anim)
+        self._show_anim_group = group
+        def _clear_show():
+            self._show_anim_group = None
+        group.finished.connect(_clear_show)
         group.start()
 
     def hide_window(self):
@@ -693,10 +765,24 @@ class ClipboardApp(QMainWindow):
         pos_anim.setEndValue(orig_pos + QPoint(0, -8))
         pos_anim.setEasingCurve(QEasingCurve.Type.InCubic)
 
+        # Stop any running show animation
+        try:
+            if self._show_anim_group is not None:
+                self._show_anim_group.stop()
+        except Exception:
+            pass
+        self._show_anim_group = None
+
         group = QParallelAnimationGroup(self)
         group.addAnimation(opacity_anim)
         group.addAnimation(pos_anim)
-        group.finished.connect(self.hide)
+        self._hide_anim_group = group
+        def _on_finished():
+            try:
+                self.hide()
+            finally:
+                self._hide_anim_group = None
+        group.finished.connect(_on_finished)
         group.start()
 
     def closeEvent(self, event):
