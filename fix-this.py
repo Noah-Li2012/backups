@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
     QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QColor
 from pynput import keyboard
 import logging
@@ -23,28 +23,27 @@ class ClipboardItemWidget(QWidget):
         self.text = text
         self.file_path = file_path
         self.app = app
-        self.setFixedSize(300, 50)  # Fixed size for consistency
+        # Fixed height for consistency; width adapts to container
+        self.setFixedHeight(50)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
 
         # Preview label with proper text truncation
         self.preview = QLabel()
-        self.preview.setFixedWidth(240)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.preview.setFont(QFont("Segoe UI", 10, QFont.Weight.Normal))
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.preview.setWordWrap(False)
-        fm = self.preview.fontMetrics()
-        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, self.preview.width() - 6)
-        self.preview.setText(elided)
+        self.preview.setText("")  # Will be set in resizeEvent to ensure correct eliding
+        self.preview.setToolTip(self.text)
+        self.setToolTip(self.text)
         self.preview.setStyleSheet(f"""
             QLabel {{
                 color: {app.text_color};
                 background: {app.item_bg};
                 border-radius: 5px;
                 padding: 3px;
-                qproperty-alignment: AlignCenter;
-                qproperty-wordWrap: false;
             }}
         """)
         layout.addWidget(self.preview)
@@ -68,6 +67,18 @@ class ClipboardItemWidget(QWidget):
                 background: {app.item_widget_bg};
             }}
         """)
+
+    def resizeEvent(self, event):
+        # Keep preview text neatly elided based on current width
+        try:
+            available = max(10, self.preview.width() - 10)
+            metrics = self.preview.fontMetrics()
+            elided = metrics.elidedText(self.text, Qt.TextElideMode.ElideRight, available)
+            self.preview.setText(elided)
+        except Exception as e:
+            logging.error(f"Failed to elide preview text: {e}")
+        finally:
+            super().resizeEvent(event)
 
     def delete_self(self):
         try:
@@ -149,7 +160,8 @@ class SettingsDialog(QDialog):
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark Blue", "Green", "Purple", "Light"])
         current_theme = parent.load_settings().get("theme", "dark-blue")
-        self.theme_combo.setCurrentText(current_theme.replace("dark-blue", "Dark Blue").capitalize())
+        theme_map = {"dark-blue": "Dark Blue", "green": "Green", "purple": "Purple", "light": "Light"}
+        self.theme_combo.setCurrentText(theme_map.get(current_theme, "Dark Blue"))
         general_layout.addRow(theme_label, self.theme_combo)
 
         save_path_label = QLabel("Folder to Save Clips:")
@@ -282,6 +294,7 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to apply settings: {e}")
 
 class ClipboardApp(QMainWindow):
+    toggleRequested = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -328,7 +341,9 @@ class ClipboardApp(QMainWindow):
 
         self.clip_list = QListWidget()
         self.clip_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.clip_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.clip_list.setFont(QFont("Segoe UI", 10))
+        self.clip_list.setUniformItemSizes(True)
         self.clip_list.setStyleSheet("""
             QListWidget {
                 padding: 5px;
@@ -371,8 +386,10 @@ class ClipboardApp(QMainWindow):
 
         self.default_settings_dir = os.path.expanduser("~/.clipboard_studio")
         self.default_settings_path = os.path.join(self.default_settings_dir, "settings.json")
+        # Ensure settings_path is available before first load
+        self.settings_path = self.default_settings_path
         settings = self.load_settings()
-        self.settings_path = settings.get("settings_path", self.default_settings_path)
+        self.settings_path = settings.get("settings_path", self.settings_path)
         default_save_path = os.path.join(os.path.dirname(sys.argv[0]), "clips")
         os.makedirs(default_save_path, exist_ok=True)
         self.save_path = settings.get("save_path", default_save_path)
@@ -384,14 +401,18 @@ class ClipboardApp(QMainWindow):
 
         self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("edit-paste"), self)
         tray_menu = QMenu()
+        toggle_action = tray_menu.addAction("Toggle")
         show_action = tray_menu.addAction("Show")
         show_action.triggered.connect(self.show_window)
         quit_action = tray_menu.addAction("Quit")
         quit_action.triggered.connect(QApplication.quit)
         self.tray_icon.setContextMenu(tray_menu)
+        toggle_action.triggered.connect(self.toggle_window)
         self.tray_icon.show()
 
         self.listener = None
+        # Ensure UI toggles happen on the Qt main thread
+        self.toggleRequested.connect(self.toggle_window)
         self.update_hotkey(self.hotkey)
 
         self.all_clips = []
@@ -403,9 +424,35 @@ class ClipboardApp(QMainWindow):
     def load_settings(self):
         try:
             os.makedirs(self.default_settings_dir, exist_ok=True)
-            if os.path.exists(self.settings_path):
-                with open(self.settings_path, "r", encoding="utf-8") as f:
+            # Try pointer/default file first
+            base_settings = {}
+            if os.path.exists(self.default_settings_path):
+                try:
+                    with open(self.default_settings_path, "r", encoding="utf-8") as f:
+                        base_settings = json.load(f)
+                except Exception:
+                    base_settings = {}
+
+            # If base file points to an external settings file, prefer it
+            target_path = None
+            if isinstance(base_settings, dict) and base_settings.get("settings_path"):
+                candidate = base_settings.get("settings_path")
+                if isinstance(candidate, str) and os.path.exists(candidate):
+                    target_path = candidate
+
+            # Fallback to known path saved in-memory
+            if not target_path and getattr(self, "settings_path", None) and os.path.exists(self.settings_path):
+                target_path = self.settings_path
+
+            # Read from target if possible
+            if target_path and os.path.exists(target_path):
+                with open(target_path, "r", encoding="utf-8") as f:
                     return json.load(f)
+
+            # Otherwise, if base file contains full settings, use it
+            if isinstance(base_settings, dict) and base_settings:
+                return base_settings
+
             return {}
         except Exception as e:
             logging.error(f"Failed to load settings: {e}")
@@ -413,11 +460,21 @@ class ClipboardApp(QMainWindow):
 
     def save_settings(self, settings):
         try:
-            path = settings.get("settings_path", self.default_settings_path)
+            # Save to the resolved path; update object's settings so next run loads correctly
+            path = settings.get("settings_path") or getattr(self, "settings_path", None) or self.default_settings_path
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)
             logging.info(f"Settings saved to {path}")
+            # Keep in-memory copy in sync
+            self.settings_path = path
+            # If using a custom path, keep a tiny pointer in default location for discovery on next launch
+            if path != self.default_settings_path:
+                try:
+                    with open(self.default_settings_path, "w", encoding="utf-8") as pf:
+                        json.dump({"settings_path": path}, pf, indent=2)
+                except Exception as pe:
+                    logging.warning(f"Failed to update settings pointer: {pe}")
         except Exception as e:
             logging.error(f"Failed to save settings: {e}")
 
@@ -571,13 +628,20 @@ class ClipboardApp(QMainWindow):
         try:
             if self.listener:
                 self.listener.stop()
-            self.listener = keyboard.GlobalHotKeys({hotkey: self.toggle_window})
+            self.listener = keyboard.GlobalHotKeys({hotkey: self.on_hotkey})
             self.listener.start()
             self.hotkey = hotkey
             logging.info(f"Updated hotkey to: {hotkey}")
         except Exception as e:
             logging.error(f"Hotkey update failed: {e}")
             QMessageBox.critical(self, "Error", f"Invalid hotkey: {hotkey}")
+
+    def on_hotkey(self):
+        # This is called from a non-Qt thread by pynput; emit a signal to toggle on the UI thread
+        try:
+            self.toggleRequested.emit()
+        except Exception as e:
+            logging.error(f"Hotkey handler error: {e}")
 
     def toggle_window(self):
         try:
@@ -591,26 +655,62 @@ class ClipboardApp(QMainWindow):
             logging.error(f"Toggle window failed: {e}")
 
     def show_window(self):
+        # Smooth fade + slight slide-in
+        orig_pos = self.pos()
         self.show()
-        self.animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.animation.setDuration(150)
-        self.animation.setStartValue(0.0)
-        self.animation.setEndValue(1.0)
-        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self.animation.start()
+        self.move(orig_pos + QPoint(0, 12))
+
+        opacity_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        opacity_anim.setDuration(200)
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        pos_anim = QPropertyAnimation(self, b"pos")
+        pos_anim.setDuration(220)
+        pos_anim.setStartValue(self.pos())
+        pos_anim.setEndValue(orig_pos)
+        pos_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(opacity_anim)
+        group.addAnimation(pos_anim)
+        group.start()
 
     def hide_window(self):
-        self.animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.animation.setDuration(150)
-        self.animation.setStartValue(1.0)
-        self.animation.setEndValue(0.0)
-        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self.animation.finished.connect(self.hide)
-        self.animation.start()
+        # Smooth fade + slight slide-out
+        orig_pos = self.pos()
+
+        opacity_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        opacity_anim.setDuration(180)
+        opacity_anim.setStartValue(1.0)
+        opacity_anim.setEndValue(0.0)
+        opacity_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        pos_anim = QPropertyAnimation(self, b"pos")
+        pos_anim.setDuration(180)
+        pos_anim.setStartValue(orig_pos)
+        pos_anim.setEndValue(orig_pos + QPoint(0, -8))
+        pos_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(opacity_anim)
+        group.addAnimation(pos_anim)
+        group.finished.connect(self.hide)
+        group.start()
 
     def closeEvent(self, event):
         event.ignore()
         self.hide_window()
+
+    def keyPressEvent(self, event):
+        try:
+            if event.key() == Qt.Key.Key_Escape:
+                self.hide_window()
+                return
+        except Exception:
+            pass
+        super().keyPressEvent(event)
 
 if __name__ == "__main__":
     try:
