@@ -419,6 +419,9 @@ class ClipboardApp(QMainWindow):
         self.max_visible = settings.get("max_visible", 30)
         self.custom_color = settings.get("custom_color", "#1A237E")
         self.hotkey = settings.get("hotkey", "<ctrl>+<shift>+.")
+
+        # Initialize clips BEFORE applying theme, since theme refresh calls update_list
+        self.all_clips = []
         self.apply_theme(self.theme)
 
         # Subtle drop shadow for a modern floating look
@@ -447,8 +450,6 @@ class ClipboardApp(QMainWindow):
         # Ensure UI toggles happen on the Qt main thread
         self.toggleRequested.connect(self.toggle_window)
         self.update_hotkey(self.hotkey)
-
-        self.all_clips = []
         self.load_clips()
         self.update_list()
 
