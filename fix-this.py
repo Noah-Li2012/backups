@@ -5,14 +5,15 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QLabel, QFileDialog, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
-    QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
-    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
+    QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QMessageBox,
+    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtGui import QIcon, QFont
 from pynput import keyboard
 import logging
 import re
+import subprocess
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,14 +49,21 @@ class ClipboardItemWidget(QWidget):
         """)
         layout.addWidget(self.preview)
 
+        # Pin toggle button
+        self.pin_btn = QPushButton("★" if self.file_path in getattr(self.app, 'pinned_paths', set()) else "☆")
+        self.pin_btn.setFixedSize(28, 28)
+        self.pin_btn.setFont(QFont("Segoe UI", 12))
+        self.pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pin_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {app.text_color}; border: none; }} QPushButton:hover {{ color: #9CA3AF; }}")
+        self.pin_btn.clicked.connect(self.toggle_pin)
+        layout.addWidget(self.pin_btn)
+
         # Delete button
-        delete_btn = QPushButton("-")
-        delete_btn.setFixedSize(40, 40)
+        delete_btn = QPushButton("🗑")
+        delete_btn.setFixedSize(28, 28)
         delete_btn.setFont(QFont("Segoe UI", 12))
-        delete_btn.setStyleSheet("""
-            QPushButton { background: #F44336; color: white; border-radius: 5px; padding: 3px; }
-            QPushButton:hover { background: #D32F2F; }
-        """)
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {app.text_color}; border: none; }} QPushButton:hover {{ color: #ef4444; }}")
         delete_btn.clicked.connect(self.delete_self)
         layout.addWidget(delete_btn)
 
@@ -89,43 +97,55 @@ class ClipboardItemWidget(QWidget):
                     parent_list.takeItem(i)
                     break
             self.app.all_clips = [(t, p) for t, p in self.app.all_clips if p != self.file_path]
+            if hasattr(self.app, 'pinned_paths') and self.file_path in self.app.pinned_paths:
+                self.app.pinned_paths.discard(self.file_path)
             if os.path.exists(self.file_path):
                 os.remove(self.file_path)
                 logging.info(f"Successfully deleted file: {self.file_path}")
             else:
                 logging.warning(f"File not found for deletion: {self.file_path}")
+            self.app.persist_pins()
             self.app.update_list()
         except PermissionError as e:
             logging.error(f"Permission denied deleting {self.file_path}: {e}")
         except Exception as e:
             logging.error(f"Failed to delete {self.file_path}: {e}")
 
+    def toggle_pin(self):
+        try:
+            self.app.toggle_pin(self.file_path)
+            self.pin_btn.setText("★" if self.file_path in self.app.pinned_paths else "☆")
+        except Exception as e:
+            logging.error(f"Failed to toggle pin: {e}")
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(350, 450)
-        end_color = "#3F51B5" if parent.theme == "dark-blue" else "#4CAF50" if parent.theme == "green" else "#9C27B0" if parent.theme == "purple" else "#F5F5F5"
+        self.setFixedSize(350, 420)
         text_color = parent.text_color
+        surface_bg = parent.item_widget_bg
+        border_color = "#3E3E3E" if parent.theme != "light" else "#CCCCCC"
+        input_bg = "rgba(255,255,255,0.06)" if parent.theme != "light" else "#FFFFFF"
+        input_text = parent.text_color
         self.setStyleSheet(f"""
-            QDialog {{ 
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {parent.custom_color}, stop:1 {end_color}); 
-                border-radius: 10px; 
-            }}
+            QDialog {{ background: {surface_bg}; border-radius: 10px; }}
             QLabel {{ color: {text_color}; font: 10pt "Segoe UI"; }}
             QLineEdit, QSpinBox, QComboBox {{ 
-                background: #FFFFFF; 
-                border-radius: 5px; 
-                padding: 5px; 
-                color: #333333; 
+                background: {input_bg}; 
+                border: 1px solid {border_color}; 
+                border-radius: 6px; 
+                padding: 6px 8px; 
+                color: {input_text}; 
             }}
             QPushButton {{ 
-                background: #4CAF50; 
-                color: white; 
-                border-radius: 5px; 
-                padding: 5px 10px; 
+                background: transparent; 
+                color: {text_color}; 
+                border: 1px solid {border_color}; 
+                border-radius: 6px; 
+                padding: 6px 10px; 
             }}
-            QPushButton:hover {{ background: #45a049; }}
+            QPushButton:hover {{ background: rgba(255,255,255,0.06); }}
         """)
 
         main_layout = QVBoxLayout(self)
@@ -148,20 +168,15 @@ class SettingsDialog(QDialog):
         self.max_items_spin.setValue(parent.max_visible)
         general_layout.addRow(max_items_label, self.max_items_spin)
 
-        color_label = QLabel("Custom Background Color:")
-        color_label.setToolTip("Choose a starting color for the app's gradient background.")
-        self.color_btn = QPushButton("Pick Color")
-        self.color_btn.clicked.connect(self.choose_color)
-        general_layout.addRow(color_label, self.color_btn)
-        self.custom_color = parent.load_settings().get("custom_color", "#1A237E")
+        # Color selection removed; themes handle colors centrally
 
         theme_label = QLabel("Choose Theme:")
-        theme_label.setToolTip("Select a predefined color scheme for the app.")
+        theme_label.setToolTip("Select a theme (Dark, Light, Aciq).")
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Dark Blue", "Green", "Purple", "Light"])
-        current_theme = parent.load_settings().get("theme", "dark-blue")
-        theme_map = {"dark-blue": "Dark Blue", "green": "Green", "purple": "Purple", "light": "Light"}
-        self.theme_combo.setCurrentText(theme_map.get(current_theme, "Dark Blue"))
+        self.theme_combo.addItems(["Dark", "Light", "Aciq"])
+        current_theme = parent.load_settings().get("theme", "dark")
+        theme_map = {"dark": "Dark", "light": "Light", "aciq": "Aciq"}
+        self.theme_combo.setCurrentText(theme_map.get(current_theme, "Dark"))
         general_layout.addRow(theme_label, self.theme_combo)
 
         save_path_label = QLabel("Folder to Save Clips:")
@@ -211,13 +226,8 @@ class SettingsDialog(QDialog):
         self.parent_app = parent
 
     def choose_color(self):
-        try:
-            color = QColorDialog.getColor(QColor(self.custom_color), self)
-            if color.isValid():
-                self.custom_color = color.name()
-                logging.info(f"Selected color: {self.custom_color}")
-        except Exception as e:
-            logging.error(f"Color selection failed: {e}")
+        # Color picker removed; themes are predefined
+        return
 
     def browse_save_path(self):
         try:
@@ -273,15 +283,14 @@ class SettingsDialog(QDialog):
             settings = {
                 "max_visible": self.max_items_spin.value(),
                 "save_path": self.save_path_edit.text(),
-                "custom_color": self.custom_color,
-                "theme": self.theme_combo.currentText().lower().replace("dark blue", "dark-blue"),
+                "theme": self.theme_combo.currentText().lower(),
                 "hotkey": new_hotkey,
-                "settings_path": self.settings_path_edit.text()
+                "settings_path": self.settings_path_edit.text(),
+                "pinned_paths": list(getattr(self.parent_app, "pinned_paths", set()))
             }
             self.parent_app.save_settings(settings)
             self.parent_app.max_visible = settings["max_visible"]
             self.parent_app.save_path = settings["save_path"]
-            self.parent_app.custom_color = settings["custom_color"]
             self.parent_app.theme = settings["theme"]
             self.parent_app.settings_path = settings["settings_path"]
             self.parent_app.update_hotkey(settings["hotkey"])
@@ -313,6 +322,15 @@ class ClipboardApp(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(10, 10, 10, 10)
         self.layout.setSpacing(10)
+        # Drop shadow for modern floating look
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(24)
+            shadow.setOffset(0, 8)
+            shadow.setColor(Qt.GlobalColor.black)
+            self.central_widget.setGraphicsEffect(shadow)
+        except Exception:
+            pass
 
         top_bar = QWidget()
         top_bar.setFixedHeight(40)
@@ -339,14 +357,25 @@ class ClipboardApp(QMainWindow):
 
         self.layout.addWidget(top_bar)
 
+        # Search field
+        self.search_query = ""
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search clips…")
+        self.search_edit.textChanged.connect(self.apply_search)
+        self.search_edit.setFixedHeight(32)
+        self.layout.addWidget(self.search_edit)
+
         self.clip_list = QListWidget()
         self.clip_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.clip_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.clip_list.setFont(QFont("Segoe UI", 10))
         self.clip_list.setUniformItemSizes(True)
+        self.clip_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.clip_list.customContextMenuRequested.connect(self.open_context_menu)
         self.clip_list.setStyleSheet("""
             QListWidget {
                 padding: 5px;
+                outline: none;
             }
             QListWidget::item {
                 padding: 2px 0;
@@ -359,22 +388,23 @@ class ClipboardApp(QMainWindow):
         self.show_all_btn = QPushButton("Show All")
         self.show_all_btn.setFixedSize(100, 40)
         self.show_all_btn.setFont(QFont("Segoe UI", 9))
-        self.show_all_btn.setStyleSheet("""
-            QPushButton { background: #4CAF50; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #45a049; }
-        """)
+        self.show_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.show_all_btn.clicked.connect(self.show_all)
         btn_layout.addWidget(self.show_all_btn)
 
-        settings_btn = QPushButton("Settings")
-        settings_btn.setFixedSize(100, 40)
-        settings_btn.setFont(QFont("Segoe UI", 9))
-        settings_btn.setStyleSheet("""
-            QPushButton { background: #FFC107; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #FFA000; }
-        """)
-        settings_btn.clicked.connect(self.open_settings)
-        btn_layout.addWidget(settings_btn)
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.setFixedSize(100, 40)
+        self.settings_btn.setFont(QFont("Segoe UI", 9))
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.clicked.connect(self.open_settings)
+        btn_layout.addWidget(self.settings_btn)
+
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.setFixedSize(100, 40)
+        self.clear_btn.setFont(QFont("Segoe UI", 9))
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.clicked.connect(self.clear_all_clips)
+        btn_layout.addWidget(self.clear_btn)
 
         btn_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
         self.layout.addLayout(btn_layout)
@@ -393,10 +423,15 @@ class ClipboardApp(QMainWindow):
         default_save_path = os.path.join(os.path.dirname(sys.argv[0]), "clips")
         os.makedirs(default_save_path, exist_ok=True)
         self.save_path = settings.get("save_path", default_save_path)
-        self.theme = settings.get("theme", "dark-blue")
+        # migrate legacy themes to new scheme
+        legacy = settings.get("theme", "dark")
+        if legacy in ("dark-blue", "green", "purple"):
+            legacy = "dark"
+        self.theme = legacy
         self.max_visible = settings.get("max_visible", 30)
-        self.custom_color = settings.get("custom_color", "#1A237E")
         self.hotkey = settings.get("hotkey", "<ctrl>+<shift>+.")
+        # load persisted pinned items
+        self.pinned_paths = set(settings.get("pinned_paths", []))
         self.apply_theme(self.theme)
 
         self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("edit-paste"), self)
@@ -561,7 +596,20 @@ class ClipboardApp(QMainWindow):
 
     def update_list(self):
         self.clip_list.clear()
-        for text, file_path in self.all_clips[:self.max_visible]:
+        query = (self.search_query or "").strip().lower()
+        # filter
+        items = [
+            (t, p) for (t, p) in self.all_clips
+            if not query or query in t.lower()
+        ]
+        # order: pinned first
+        try:
+            pinned = [(t, p) for (t, p) in items if p in getattr(self, 'pinned_paths', set())]
+            unpinned = [(t, p) for (t, p) in items if p not in getattr(self, 'pinned_paths', set())]
+            ordered = pinned + unpinned
+        except Exception:
+            ordered = items
+        for text, file_path in ordered[: self.max_visible]:
             item_widget = ClipboardItemWidget(text, file_path, self.clip_list, app=self)
             item = QListWidgetItem()
             self.clip_list.addItem(item)
@@ -592,33 +640,57 @@ class ClipboardApp(QMainWindow):
 
     def apply_theme(self, theme):
         try:
-            start_color = self.custom_color
-            end_color = "#3F51B5" if theme == "dark-blue" else "#4CAF50" if theme == "green" else "#9C27B0" if theme == "purple" else "#FFFFFF"
-            self.text_color = "#E0E0E0" if theme != "light" else "#333333"
-            self.item_bg = "rgba(255, 255, 255, 20)" if theme != "light" else "rgba(0, 0, 0, 20)"
-            self.item_widget_bg = "#1A237E" if theme != "light" else "#FFFFFF"
-            background_alpha = "255,255,255,10" if theme in ["dark-blue", "green", "purple"] else "0,0,0,10"
-            border_color = "#3E3E3E" if theme in ["dark-blue", "green", "purple"] else "#CCCCCC"
-            item_hover = "#283593" if theme == "dark-blue" else "#388E3C" if theme == "green" else "#7B1FA2" if theme == "purple" else "#B0BEC5"
-            self.central_widget.setStyleSheet(f"""
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start_color}, stop:1 {end_color});
-                border-radius: 15px;
-            """)
-            self.clip_list.setStyleSheet(f"""
+            # Modern minimal palettes
+            if theme == "light":
+                self.text_color = "#111827"
+                self.item_bg = "#F3F4F6"
+                self.item_widget_bg = "#FFFFFF"
+                surface = "#FFFFFF"
+                border_color = "#E5E7EB"
+                item_hover = "#F1F5F9"
+            elif theme == "aciq":
+                # Dark with subtle cyan accent
+                self.text_color = "#E6F6FF"
+                self.item_bg = "rgba(230,246,255,0.06)"
+                self.item_widget_bg = "#0F1720"
+                surface = "#0F1720"
+                border_color = "#14212C"
+                item_hover = "#0E1C25"
+            else:
+                # default dark
+                self.text_color = "#E5E7EB"
+                self.item_bg = "rgba(255,255,255,0.06)"
+                self.item_widget_bg = "#151922"
+                surface = "#151922"
+                border_color = "#252A34"
+                item_hover = "#1B2130"
+
+            self.central_widget.setStyleSheet(
+                f"background: {surface}; border-radius: 15px;"
+            )
+            self.clip_list.setStyleSheet(
+                f"""
                 QListWidget {{ 
-                    background: rgba({background_alpha}); 
+                    background: {surface}; 
+                    border: 1px solid {border_color};
                     border-radius: 10px; 
                     color: {self.text_color}; 
                     padding: 5px;
                 }}
                 QListWidget::item {{ padding: 2px 0; border-bottom: 1px solid {border_color}; }}
                 QListWidget::item:hover {{ background: {item_hover}; }}
-            """)
+                """
+            )
+            # search field styling
+            self.search_edit.setStyleSheet(
+                f"QLineEdit {{ background: {surface}; color: {self.text_color}; border: 1px solid {border_color}; border-radius: 8px; padding: 6px 10px; }}"
+            )
             self.title.setStyleSheet(f"color: {self.text_color};")
-            self.close_btn.setStyleSheet(f"""
-                QPushButton {{ background: transparent; color: {self.text_color}; border: none; }}
-                QPushButton:hover {{ color: #F44336; }}
-            """)
+            button_style = f"QPushButton {{ background: transparent; color: {self.text_color}; border: 1px solid {border_color}; border-radius: 8px; padding: 6px 10px; }} QPushButton:hover {{ background: {item_hover}; }}"
+            self.show_all_btn.setStyleSheet(button_style)
+            self.settings_btn.setStyleSheet(button_style)
+            self.clear_btn.setStyleSheet(button_style)
+            self.close_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {self.text_color}; border: none; }} QPushButton:hover {{ color: #F43F5E; }}")
             self.update_list()  # Refresh list to apply theme to items
             logging.info(f"Applied theme: {theme}")
         except Exception as e:
@@ -698,6 +770,105 @@ class ClipboardApp(QMainWindow):
         group.addAnimation(pos_anim)
         group.finished.connect(self.hide)
         group.start()
+
+    def open_context_menu(self, pos):
+        try:
+            item = self.clip_list.itemAt(pos)
+            if not item:
+                return
+            widget = self.clip_list.itemWidget(item)
+            if not widget:
+                return
+            menu = QMenu(self)
+            copy_action = menu.addAction("Copy")
+            pin_toggle = "Unpin" if getattr(self, 'pinned_paths', set()) and widget.file_path in self.pinned_paths else "Pin"
+            pin_action = menu.addAction(pin_toggle)
+            del_action = menu.addAction("Delete")
+            reveal_action = menu.addAction("Open in Folder")
+            action = menu.exec(self.clip_list.mapToGlobal(pos))
+            if action == copy_action:
+                self.ignoring_clipboard_change = True
+                self.clipboard.setText(widget.text)
+            elif action == pin_action:
+                self.toggle_pin(widget.file_path)
+            elif action == del_action:
+                widget.delete_self()
+            elif action == reveal_action:
+                self.reveal_in_folder(widget.file_path)
+        except Exception as e:
+            logging.error(f"Context menu error: {e}")
+
+    def toggle_pin(self, file_path):
+        try:
+            if not hasattr(self, 'pinned_paths'):
+                self.pinned_paths = set()
+            if file_path in self.pinned_paths:
+                self.pinned_paths.discard(file_path)
+            else:
+                self.pinned_paths.add(file_path)
+            self.persist_pins()
+            self.update_list()
+        except Exception as e:
+            logging.error(f"Toggle pin failed: {e}")
+
+    def persist_pins(self):
+        try:
+            settings = self.load_settings()
+            if not isinstance(settings, dict):
+                settings = {}
+            # keep other settings intact
+            settings.setdefault("save_path", self.save_path)
+            settings.setdefault("theme", self.theme)
+            settings.setdefault("max_visible", self.max_visible)
+            settings.setdefault("hotkey", self.hotkey)
+            settings.setdefault("settings_path", self.settings_path)
+            settings["pinned_paths"] = [p for p in getattr(self, 'pinned_paths', set()) if os.path.exists(p)]
+            self.save_settings(settings)
+        except Exception as e:
+            logging.error(f"Persist pins failed: {e}")
+
+    def reveal_in_folder(self, path):
+        try:
+            folder = os.path.dirname(path)
+            if sys.platform.startswith('darwin'):
+                subprocess.Popen(['open', folder])
+            elif os.name == 'nt':
+                os.startfile(folder)  # type: ignore  # noqa
+            else:
+                subprocess.Popen(['xdg-open', folder])
+        except Exception as e:
+            logging.error(f"Reveal in folder failed: {e}")
+
+    def clear_all_clips(self):
+        try:
+            if not self.all_clips:
+                return
+            reply = QMessageBox.question(
+                self,
+                "Clear All",
+                "Delete all saved clips? This cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            for _, p in list(self.all_clips):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            self.all_clips = []
+            if hasattr(self, 'pinned_paths'):
+                self.pinned_paths.clear()
+            self.persist_pins()
+            self.update_list()
+        except Exception as e:
+            logging.error(f"Clear all failed: {e}")
+
+    def apply_search(self, text):
+        self.search_query = text
+        self.update_list()
 
     def closeEvent(self, event):
         event.ignore()
