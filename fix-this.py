@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QLabel, QFileDialog, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
     QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
-    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
+    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget, QCheckBox
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QColor
@@ -179,6 +179,16 @@ class SettingsDialog(QDialog):
         self.hotkey_edit = QLineEdit(parent.load_settings().get("hotkey", "<ctrl>+<shift>+."))
         general_layout.addRow(hotkey_label, self.hotkey_edit)
 
+        # Start with Windows (Windows-only)
+        startup_label = QLabel("Start with Windows:")
+        startup_label.setToolTip("Automatically start the app when you sign in to Windows.")
+        self.startup_check = QCheckBox()
+        self.startup_check.setChecked(bool(parent.load_settings().get("start_with_windows", False)))
+        if not sys.platform.startswith("win"):
+            self.startup_check.setEnabled(False)
+            self.startup_check.setToolTip("Available on Windows only")
+        general_layout.addRow(startup_label, self.startup_check)
+
         self.tab_widget.addTab(general_tab, "General")
 
         # Advanced Tab
@@ -276,7 +286,8 @@ class SettingsDialog(QDialog):
                 "custom_color": self.custom_color,
                 "theme": self.theme_combo.currentText().lower().replace("dark blue", "dark-blue"),
                 "hotkey": new_hotkey,
-                "settings_path": self.settings_path_edit.text()
+                "settings_path": self.settings_path_edit.text(),
+                "start_with_windows": bool(self.startup_check.isChecked()),
             }
             self.parent_app.save_settings(settings)
             self.parent_app.max_visible = settings["max_visible"]
@@ -284,7 +295,10 @@ class SettingsDialog(QDialog):
             self.parent_app.custom_color = settings["custom_color"]
             self.parent_app.theme = settings["theme"]
             self.parent_app.settings_path = settings["settings_path"]
+            self.parent_app.start_with_windows = settings["start_with_windows"]
             self.parent_app.update_hotkey(settings["hotkey"])
+            # Apply Windows startup setting if applicable
+            self.parent_app.update_startup(settings["start_with_windows"])
             self.parent_app.apply_theme(self.parent_app.theme)
             self.parent_app.update_list()
             self.accept()
@@ -397,6 +411,8 @@ class ClipboardApp(QMainWindow):
         self.max_visible = settings.get("max_visible", 30)
         self.custom_color = settings.get("custom_color", "#1A237E")
         self.hotkey = settings.get("hotkey", "<ctrl>+<shift>+.")
+        # Windows startup preference
+        self.start_with_windows = bool(settings.get("start_with_windows", False))
         self.apply_theme(self.theme)
 
         self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("edit-paste"), self)
@@ -414,6 +430,12 @@ class ClipboardApp(QMainWindow):
         # Ensure UI toggles happen on the Qt main thread
         self.toggleRequested.connect(self.toggle_window)
         self.update_hotkey(self.hotkey)
+
+        # Enforce Windows startup preference on launch (no-op on non-Windows)
+        try:
+            self.update_startup(self.start_with_windows)
+        except Exception as e:
+            logging.warning(f"Could not apply startup preference: {e}")
 
         self.all_clips = []
         self.load_clips()
@@ -635,6 +657,52 @@ class ClipboardApp(QMainWindow):
         except Exception as e:
             logging.error(f"Hotkey update failed: {e}")
             QMessageBox.critical(self, "Error", f"Invalid hotkey: {hotkey}")
+
+    def update_startup(self, enable: bool) -> None:
+        """Enable or disable starting the app at Windows login.
+
+        On non-Windows platforms this is a no-op.
+        """
+        try:
+            if not sys.platform.startswith("win"):
+                logging.info("'Start with Windows' is only supported on Windows; skipping.")
+                return
+
+            try:
+                import winreg  # type: ignore
+            except Exception as import_error:
+                logging.error(f"winreg not available: {import_error}")
+                QMessageBox.warning(self, "Startup", "Cannot modify Windows startup without winreg module.")
+                return
+
+            run_key_path = r"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+            app_name = "ClipboardStudio"
+
+            # Compute command to run at login
+            if getattr(sys, "frozen", False):
+                # Frozen executable (e.g., PyInstaller)
+                command = f'"{sys.executable}"'
+            else:
+                python_exe = sys.executable
+                script_path = os.path.abspath(sys.argv[0])
+                command = f'"{python_exe}" "{script_path}"'
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key_path, 0, winreg.KEY_SET_VALUE) as key:
+                if enable:
+                    winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, command)
+                    logging.info("Enabled Windows startup (HKCU Run)")
+                else:
+                    try:
+                        winreg.DeleteValue(key, app_name)
+                        logging.info("Disabled Windows startup (HKCU Run)")
+                    except FileNotFoundError:
+                        logging.info("Startup registry value not found; nothing to remove")
+        except Exception as e:
+            logging.error(f"Failed to update Windows startup setting: {e}")
+            try:
+                QMessageBox.warning(self, "Startup", f"Failed to update Windows startup setting: {e}")
+            except Exception:
+                pass
 
     def on_hotkey(self):
         # This is called from a non-Qt thread by pynput; emit a signal to toggle on the UI thread
