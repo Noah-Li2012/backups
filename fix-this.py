@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
-from PyQt6.QtGui import QIcon, QFont, QColor, QPainter, QBrush, QLinearGradient, QPixmap, QImage, QPen
+from PyQt6.QtGui import QIcon, QFont, QColor, QPainter, QBrush, QLinearGradient, QPixmap, QImage, QPen, QPainterPath
 from pynput import keyboard
 import re
 
@@ -45,37 +45,31 @@ class AcrylicWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         rect = self.rect().adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(rect, self._radius, self._radius)
 
         # Base gradient underlay
         grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
         grad.setColorAt(0.0, self._start_color)
         grad.setColorAt(1.0, self._end_color)
-        painter.setBrush(QBrush(grad))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, self._radius, self._radius)
+        painter.fillPath(path, QBrush(grad))
 
         # Translucent acrylic tint
-        painter.setBrush(QBrush(self._tint_color))
-        painter.drawRoundedRect(rect, self._radius, self._radius)
+        painter.fillPath(path, QBrush(self._tint_color))
 
-        # Subtle noise overlay
+        # Subtle noise overlay (tiled texture)
         if not self._noise.isNull():
             painter.save()
             painter.setOpacity(0.06)
-            y = rect.top()
-            while y < rect.bottom():
-                x = rect.left()
-                while x < rect.right():
-                    painter.drawPixmap(x, y, self._noise)
-                    x += self._noise.width()
-                y += self._noise.height()
+            painter.setClipPath(path)
+            painter.fillRect(rect, QBrush(self._noise))
             painter.restore()
 
         # Border for crisp edge
         painter.setOpacity(1.0)
         painter.setPen(QPen(self._border_color, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect, self._radius, self._radius)
+        painter.drawPath(path)
 
 
 class ClipboardItemWidget(QWidget):
@@ -386,10 +380,10 @@ class ClipboardApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Use windowOpacity for fade animations (safer on Windows)
+        # Use windowOpacity for fade animations (safer across platforms)
         self.setWindowOpacity(1.0)
+        self._anim_group = None
 
         # Acrylic central widget
         self.central_widget = AcrylicWidget(radius=15)
@@ -485,7 +479,10 @@ class ClipboardApp(QMainWindow):
         self.hotkey = settings.get("hotkey", "<ctrl>+<shift>+.")
         self.apply_theme(self.theme)
 
-        self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("edit-paste"), self)
+        tray_icon = QIcon.fromTheme("edit-paste")
+        if tray_icon.isNull():
+            tray_icon = QIcon()
+        self.tray_icon = QSystemTrayIcon(tray_icon, self)
         tray_menu = QMenu()
         toggle_action = tray_menu.addAction("Toggle")
         show_action = tray_menu.addAction("Show")
@@ -750,6 +747,13 @@ class ClipboardApp(QMainWindow):
         self.show()
         self.move(orig_pos + QPoint(0, 12))
 
+        # Cancel any running animation
+        try:
+            if self._anim_group is not None:
+                self._anim_group.stop()
+        except Exception:
+            pass
+
         # Fade in using windowOpacity
         self.setWindowOpacity(0.0)
         opacity_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -768,10 +772,18 @@ class ClipboardApp(QMainWindow):
         group.addAnimation(opacity_anim)
         group.addAnimation(pos_anim)
         group.start()
+        self._anim_group = group
 
     def hide_window(self):
         # Smooth fade + slight slide-out
         orig_pos = self.pos()
+
+        # Cancel any running animation
+        try:
+            if self._anim_group is not None:
+                self._anim_group.stop()
+        except Exception:
+            pass
 
         # Fade out using windowOpacity
         opacity_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -789,8 +801,15 @@ class ClipboardApp(QMainWindow):
         group = QParallelAnimationGroup(self)
         group.addAnimation(opacity_anim)
         group.addAnimation(pos_anim)
-        group.finished.connect(self.hide)
+        def _on_finished():
+            try:
+                self.hide()
+                self.setWindowOpacity(1.0)  # reset for next show
+            except Exception:
+                pass
+        group.finished.connect(_on_finished)
         group.start()
+        self._anim_group = group
 
     def closeEvent(self, event):
         event.ignore()
