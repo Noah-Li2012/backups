@@ -388,9 +388,8 @@ class ClipboardApp(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Opacity effect for fade animations
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
+        # Use windowOpacity for fade animations (safer on Windows)
+        self.setWindowOpacity(1.0)
 
         # Acrylic central widget
         self.central_widget = AcrylicWidget(radius=15)
@@ -751,7 +750,9 @@ class ClipboardApp(QMainWindow):
         self.show()
         self.move(orig_pos + QPoint(0, 12))
 
-        opacity_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        # Fade in using windowOpacity
+        self.setWindowOpacity(0.0)
+        opacity_anim = QPropertyAnimation(self, b"windowOpacity")
         opacity_anim.setDuration(200)
         opacity_anim.setStartValue(0.0)
         opacity_anim.setEndValue(1.0)
@@ -772,7 +773,8 @@ class ClipboardApp(QMainWindow):
         # Smooth fade + slight slide-out
         orig_pos = self.pos()
 
-        opacity_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        # Fade out using windowOpacity
+        opacity_anim = QPropertyAnimation(self, b"windowOpacity")
         opacity_anim.setDuration(180)
         opacity_anim.setStartValue(1.0)
         opacity_anim.setEndValue(0.0)
