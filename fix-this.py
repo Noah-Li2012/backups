@@ -6,12 +6,76 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QLabel, QFileDialog, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
     QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
-    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget, QGraphicsBlurEffect
+    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtGui import QIcon, QFont, QColor, QPainter, QBrush, QLinearGradient, QPixmap, QImage, QPen
 from pynput import keyboard
 import re
+
+
+class AcrylicWidget(QWidget):
+    """A lightweight acrylic-style backdrop with tint and subtle noise."""
+
+    def __init__(self, parent=None, radius=15):
+        super().__init__(parent)
+        self._radius = radius
+        self._start_color = QColor("#1A237E")
+        self._end_color = QColor("#3F51B5")
+        self._tint_color = QColor(255, 255, 255, 140)
+        self._border_color = QColor(255, 255, 255, 60)
+        self._noise = self._generate_noise_texture(64)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_colors(self, start_hex: str, end_hex: str):
+        self._start_color = QColor(start_hex)
+        self._end_color = QColor(end_hex)
+        self.update()
+
+    def _generate_noise_texture(self, size: int) -> QPixmap:
+        img = QImage(size, size, QImage.Format.Format_ARGB32)
+        for y in range(size):
+            for x in range(size):
+                v = 235 + ((x * 37 + y * 17) % 20)
+                img.setPixel(x, y, QColor(v, v, v, 16).rgba())
+        return QPixmap.fromImage(img)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+
+        # Base gradient underlay
+        grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        grad.setColorAt(0.0, self._start_color)
+        grad.setColorAt(1.0, self._end_color)
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect, self._radius, self._radius)
+
+        # Translucent acrylic tint
+        painter.setBrush(QBrush(self._tint_color))
+        painter.drawRoundedRect(rect, self._radius, self._radius)
+
+        # Subtle noise overlay
+        if not self._noise.isNull():
+            painter.save()
+            painter.setOpacity(0.06)
+            y = rect.top()
+            while y < rect.bottom():
+                x = rect.left()
+                while x < rect.right():
+                    painter.drawPixmap(x, y, self._noise)
+                    x += self._noise.width()
+                y += self._noise.height()
+            painter.restore()
+
+        # Border for crisp edge
+        painter.setOpacity(1.0)
+        painter.setPen(QPen(self._border_color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, self._radius, self._radius)
 
 
 class ClipboardItemWidget(QWidget):
@@ -46,12 +110,12 @@ class ClipboardItemWidget(QWidget):
         layout.addWidget(self.preview)
 
         # Delete button
-        delete_btn = QPushButton("-")
+        delete_btn = QPushButton("🗑")
         delete_btn.setFixedSize(40, 40)
         delete_btn.setFont(QFont("Segoe UI", 12))
         delete_btn.setStyleSheet("""
-            QPushButton { background: #F44336; color: white; border-radius: 5px; padding: 3px; }
-            QPushButton:hover { background: #D32F2F; }
+            QPushButton { background: rgba(244, 67, 54, 0.85); color: white; border-radius: 8px; }
+            QPushButton:hover { background: rgba(211, 47, 47, 0.95); }
         """)
         delete_btn.clicked.connect(self.delete_self)
         layout.addWidget(delete_btn)
@@ -62,6 +126,7 @@ class ClipboardItemWidget(QWidget):
             QWidget {{
                 border-radius: 10px;
                 background: {app.item_widget_bg};
+                border: 1px solid rgba(255, 255, 255, 40);
             }}
         """)
 
@@ -79,22 +144,30 @@ class ClipboardItemWidget(QWidget):
 
     def delete_self(self):
         try:
-            parent_list = self.app.clip_list  # Directly access QListWidget from app
+            parent_list = self.app.clip_list
             for i in range(parent_list.count()):
                 item = parent_list.item(i)
                 if parent_list.itemWidget(item) is self:
                     parent_list.takeItem(i)
                     break
+
             self.app.all_clips = [(t, p) for t, p in self.app.all_clips if p != self.file_path]
-            if os.path.exists(self.file_path):
-                os.remove(self.file_path)
-                pass
-            else:
-                pass
+
+            if isinstance(self.file_path, str):
+                try:
+                    clip_abs = os.path.abspath(self.file_path)
+                    base_abs = os.path.abspath(self.app.save_path)
+                    if clip_abs.startswith(base_abs) and os.path.exists(clip_abs):
+                        os.remove(clip_abs)
+                except PermissionError:
+                    QMessageBox.critical(self, "Delete Failed", "Permission denied while deleting the file.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Delete Failed", f"Unable to delete file:\n{e}")
+
             self.app.update_list()
-        except PermissionError as e:
-            pass
-        except Exception as e:
+            self.deleteLater()
+        except Exception:
+            # Swallow unexpected errors to avoid crashing the UI
             pass
 
 
@@ -106,16 +179,11 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Frosted glass effect
-        blur_effect = QGraphicsBlurEffect(self)
-        blur_effect.setBlurRadius(15)
-        self.setGraphicsEffect(blur_effect)
-
-        # Semi-transparent background
+        # Acrylic-like dialog styling (avoid blurring text/content)
         self.setStyleSheet("""
             QDialog {
-                background: rgba(255, 255, 255, 0.8);  /* Semi-transparent white */
-                border: 1px solid rgba(255, 255, 255, 0.3);  /* Subtle border */
+                background: rgba(255, 255, 255, 0.78);
+                border: 1px solid rgba(255, 255, 255, 0.35);
                 border-radius: 15px;
             }
             QLabel {
@@ -123,20 +191,20 @@ class SettingsDialog(QDialog):
                 font: 10pt "Segoe UI";
             }
             QLineEdit, QSpinBox, QComboBox {
-                background: rgba(255, 255, 255, 0.9);
-                border: 1px solid rgba(0, 0, 0, 0.1);
-                border-radius: 5px;
-                padding: 5px;
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid rgba(0, 0, 0, 0.12);
+                border-radius: 6px;
+                padding: 6px;
                 color: #333333;
             }
             QPushButton {
-                background: rgba(0, 0, 0, 0.7);
+                background: rgba(33, 33, 33, 0.85);
                 color: white;
-                border-radius: 5px;
-                padding: 5px 10px;
+                border-radius: 6px;
+                padding: 6px 12px;
             }
             QPushButton:hover {
-                background: rgba(0, 0, 0, 0.9);
+                background: rgba(33, 33, 33, 0.95);
             }
         """)
 
@@ -320,20 +388,12 @@ class ClipboardApp(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Frosted glass effect
-        blur_effect = QGraphicsBlurEffect(self)
-        blur_effect.setBlurRadius(20)
-        self.setGraphicsEffect(blur_effect)
+        # Opacity effect for fade animations
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
 
-        # Semi-transparent background
-        self.central_widget = QWidget()
-        self.central_widget.setStyleSheet("""
-            QWidget {
-                background: rgba(255, 255, 255, 0.8);  /* Semi-transparent white */
-                border: 1px solid rgba(255, 255, 255, 0.3);  /* Subtle border */
-                border-radius: 15px;
-            }
-        """)
+        # Acrylic central widget
+        self.central_widget = AcrylicWidget(radius=15)
         self.setCentralWidget(self.central_widget)
 
         self.layout = QVBoxLayout(self.central_widget)
@@ -373,6 +433,7 @@ class ClipboardApp(QMainWindow):
         self.clip_list.setStyleSheet("""
             QListWidget {
                 padding: 5px;
+                background: transparent;
             }
             QListWidget::item {
                 padding: 2px 0;
@@ -386,8 +447,8 @@ class ClipboardApp(QMainWindow):
         self.show_all_btn.setFixedSize(100, 40)
         self.show_all_btn.setFont(QFont("Segoe UI", 9))
         self.show_all_btn.setStyleSheet("""
-            QPushButton { background: #333; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #222; }
+            QPushButton { background: rgba(33,33,33,0.85); color: white; border-radius: 8px; padding: 6px; }
+            QPushButton:hover { background: rgba(33,33,33,0.95); }
         """)
         self.show_all_btn.clicked.connect(self.show_all)
         btn_layout.addWidget(self.show_all_btn)
@@ -396,8 +457,8 @@ class ClipboardApp(QMainWindow):
         settings_btn.setFixedSize(100, 40)
         settings_btn.setFont(QFont("Segoe UI", 9))
         settings_btn.setStyleSheet("""
-            QPushButton { background: #333; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #222; }
+            QPushButton { background: rgba(33,33,33,0.85); color: white; border-radius: 8px; padding: 6px; }
+            QPushButton:hover { background: rgba(33,33,33,0.95); }
         """)
         settings_btn.clicked.connect(self.open_settings)
         btn_layout.addWidget(settings_btn)
@@ -620,21 +681,20 @@ class ClipboardApp(QMainWindow):
     def apply_theme(self, theme):
         try:
             start_color = self.custom_color
-            end_color = "#3F51B5" if theme == "dark-blue" else "#4CAF50" if theme == "green" else "#9C27B0" if theme == "purple" else "#212121" if theme == "dark" else "#111"
+            end_color = "#3F51B5" if theme == "dark-blue" else "#4CAF50" if theme == "green" else "#9C27B0" if theme == "purple" else "#212121" if theme == "dark" else "#111111"
             self.text_color = "#E0E0E0" if theme != "light" else "#333333"
-            self.item_bg = "rgba(255, 255, 255, 20)" if theme != "light" else "rgba(0, 0, 0, 20)"
-            self.item_widget_bg = "#424242" if theme == "dark" else "#1A237E" if theme != "light" else "#FFFFFF"
+            self.item_bg = "rgba(255, 255, 255, 30)" if theme != "light" else "rgba(0, 0, 0, 30)"
+            self.item_widget_bg = "rgba(255, 255, 255, 35)" if theme != "light" else "rgba(0, 0, 0, 35)"
             background_alpha = "33,33,33,10" if theme == "dark" else "255,255,255,10" if theme in ["dark-blue", "green",
                                                                                                    "purple",
                                                                                                    "dark"] else "0,0,0,10"
             border_color = "#616161" if theme == "dark" else "#3E3E3E" if theme in ["dark-blue", "green", "purple",
                                                                                     "dark"] else "#CCCCCC"
-            item_hover = "#616161" if theme == "dark" else "#283593" if theme == "dark-blue" else "#388E3C" if theme == "green" else "#7B1FA2" if theme == "purple" else "#B0BEC5" if theme == "dark" else "#111"
+            item_hover = "#616161" if theme == "dark" else "#283593" if theme == "dark-blue" else "#388E3C" if theme == "green" else "#7B1FA2" if theme == "purple" else "#B0BEC5" if theme == "dark" else "#111111"
 
-            self.central_widget.setStyleSheet(f"""
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start_color}, stop:1 {end_color});
-                border-radius: 15px;
-            """)
+            # Update acrylic gradient backdrop
+            if isinstance(self.central_widget, AcrylicWidget):
+                self.central_widget.set_colors(start_color, end_color)
             self.clip_list.setStyleSheet(f"""
                 QListWidget {{ 
                     background: rgba({background_alpha}); 
