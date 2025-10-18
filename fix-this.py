@@ -6,16 +6,13 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QLabel, QFileDialog, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
     QDialog, QFormLayout, QSpinBox, QComboBox, QLineEdit, QColorDialog, QMessageBox,
-    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget
+    QToolTip, QListWidgetItem, QSpacerItem, QSizePolicy, QTabWidget, QGraphicsBlurEffect
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon, QFont, QColor
 from pynput import keyboard
-import logging
 import re
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ClipboardItemWidget(QWidget):
     def __init__(self, text, file_path, parent=None, app=None):
@@ -76,7 +73,7 @@ class ClipboardItemWidget(QWidget):
             elided = metrics.elidedText(self.text, Qt.TextElideMode.ElideRight, available)
             self.preview.setText(elided)
         except Exception as e:
-            logging.error(f"Failed to elide preview text: {e}")
+            pass
         finally:
             super().resizeEvent(event)
 
@@ -91,41 +88,56 @@ class ClipboardItemWidget(QWidget):
             self.app.all_clips = [(t, p) for t, p in self.app.all_clips if p != self.file_path]
             if os.path.exists(self.file_path):
                 os.remove(self.file_path)
-                logging.info(f"Successfully deleted file: {self.file_path}")
+                pass
             else:
-                logging.warning(f"File not found for deletion: {self.file_path}")
+                pass
             self.app.update_list()
         except PermissionError as e:
-            logging.error(f"Permission denied deleting {self.file_path}: {e}")
+            pass
         except Exception as e:
-            logging.error(f"Failed to delete {self.file_path}: {e}")
+            pass
+
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setFixedSize(350, 450)
-        end_color = "#3F51B5" if parent.theme == "dark-blue" else "#4CAF50" if parent.theme == "green" else "#9C27B0" if parent.theme == "purple" else "#F5F5F5"
-        text_color = parent.text_color
-        self.setStyleSheet(f"""
-            QDialog {{ 
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {parent.custom_color}, stop:1 {end_color}); 
-                border-radius: 10px; 
-            }}
-            QLabel {{ color: {text_color}; font: 10pt "Segoe UI"; }}
-            QLineEdit, QSpinBox, QComboBox {{ 
-                background: #FFFFFF; 
-                border-radius: 5px; 
-                padding: 5px; 
-                color: #333333; 
-            }}
-            QPushButton {{ 
-                background: #4CAF50; 
-                color: white; 
-                border-radius: 5px; 
-                padding: 5px 10px; 
-            }}
-            QPushButton:hover {{ background: #45a049; }}
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        # Frosted glass effect
+        blur_effect = QGraphicsBlurEffect(self)
+        blur_effect.setBlurRadius(15)
+        self.setGraphicsEffect(blur_effect)
+
+        # Semi-transparent background
+        self.setStyleSheet("""
+            QDialog {
+                background: rgba(255, 255, 255, 0.8);  /* Semi-transparent white */
+                border: 1px solid rgba(255, 255, 255, 0.3);  /* Subtle border */
+                border-radius: 15px;
+            }
+            QLabel {
+                color: #333333;
+                font: 10pt "Segoe UI";
+            }
+            QLineEdit, QSpinBox, QComboBox {
+                background: rgba(255, 255, 255, 0.9);
+                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 5px;
+                padding: 5px;
+                color: #333333;
+            }
+            QPushButton {
+                background: rgba(0, 0, 0, 0.7);
+                color: white;
+                border-radius: 5px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background: rgba(0, 0, 0, 0.9);
+            }
         """)
 
         main_layout = QVBoxLayout(self)
@@ -158,9 +170,9 @@ class SettingsDialog(QDialog):
         theme_label = QLabel("Choose Theme:")
         theme_label.setToolTip("Select a predefined color scheme for the app.")
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Dark Blue", "Green", "Purple", "Light"])
+        self.theme_combo.addItems(["Dark Blue", "Green", "Purple", "Light", "Dark"])
         current_theme = parent.load_settings().get("theme", "dark-blue")
-        theme_map = {"dark-blue": "Dark Blue", "green": "Green", "purple": "Purple", "light": "Light"}
+        theme_map = {"dark-blue": "Dark Blue", "green": "Green", "purple": "Purple", "light": "Light", "dark": "Dark"}
         self.theme_combo.setCurrentText(theme_map.get(current_theme, "Dark Blue"))
         general_layout.addRow(theme_label, self.theme_combo)
 
@@ -178,7 +190,12 @@ class SettingsDialog(QDialog):
         hotkey_label.setToolTip("Enter a keyboard shortcut like <ctrl>+<shift>+. to toggle the app window.")
         self.hotkey_edit = QLineEdit(parent.load_settings().get("hotkey", "<ctrl>+<shift>+."))
         general_layout.addRow(hotkey_label, self.hotkey_edit)
-
+        hi = QLabel("\n\n\n\n\n")
+        general_layout.addRow(hi)
+        cre = QLabel(
+            "Copyright © 2025 NoahLi404\nYou may have the source code \nbut you need to follow \nthe License.txt via source code")
+        self.cre = QLineEdit(parent.load_settings().get("credit", "https://noahli404.pages.dev/clipboardStudioSource"))
+        general_layout.addRow(cre, self.cre)
         self.tab_widget.addTab(general_tab, "General")
 
         # Advanced Tab
@@ -215,9 +232,9 @@ class SettingsDialog(QDialog):
             color = QColorDialog.getColor(QColor(self.custom_color), self)
             if color.isValid():
                 self.custom_color = color.name()
-                logging.info(f"Selected color: {self.custom_color}")
+                pass
         except Exception as e:
-            logging.error(f"Color selection failed: {e}")
+            pass
 
     def browse_save_path(self):
         try:
@@ -226,19 +243,20 @@ class SettingsDialog(QDialog):
             path = QFileDialog.getExistingDirectory(self, "Select Folder", default_path)
             if path:
                 self.save_path_edit.setText(path)
-                logging.info(f"Selected save path: {path}")
+                pass
         except Exception as e:
-            logging.error(f"Browse path failed: {e}")
+            pass
 
     def browse_settings_path(self):
         try:
-            default_dir = os.path.dirname(self.settings_path_edit.text()) if os.path.exists(self.settings_path_edit.text()) else self.parent_app.default_settings_dir
+            default_dir = os.path.dirname(self.settings_path_edit.text()) if os.path.exists(
+                self.settings_path_edit.text()) else self.parent_app.default_settings_dir
             path, _ = QFileDialog.getSaveFileName(self, "Select Settings File", default_dir, "JSON Files (*.json)")
             if path:
                 self.settings_path_edit.setText(path)
-                logging.info(f"Selected settings path: {path}")
+                pass
         except Exception as e:
-            logging.error(f"Browse settings path failed: {e}")
+            pass
 
     def validate_hotkey(self, hotkey):
         try:
@@ -260,7 +278,7 @@ class SettingsDialog(QDialog):
                     return False
             return has_key
         except Exception as e:
-            logging.error(f"Hotkey validation failed: {e}")
+            pass
             return False
 
     def apply_settings(self):
@@ -288,28 +306,36 @@ class SettingsDialog(QDialog):
             self.parent_app.apply_theme(self.parent_app.theme)
             self.parent_app.update_list()
             self.accept()
-            logging.info("Settings applied successfully")
+            pass
         except Exception as e:
-            logging.error(f"Apply settings failed: {e}")
+            pass
             QMessageBox.critical(self, "Error", f"Failed to apply settings: {e}")
+
 
 class ClipboardApp(QMainWindow):
     toggleRequested = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setGeometry(100, 100, 400, 500)
 
-        self.dragging = False
-        self.mouse_pos = None
+        # Frosted glass effect
+        blur_effect = QGraphicsBlurEffect(self)
+        blur_effect.setBlurRadius(20)
+        self.setGraphicsEffect(blur_effect)
 
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(0.0)
-
+        # Semi-transparent background
         self.central_widget = QWidget()
+        self.central_widget.setStyleSheet("""
+            QWidget {
+                background: rgba(255, 255, 255, 0.8);  /* Semi-transparent white */
+                border: 1px solid rgba(255, 255, 255, 0.3);  /* Subtle border */
+                border-radius: 15px;
+            }
+        """)
         self.setCentralWidget(self.central_widget)
+
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(10, 10, 10, 10)
         self.layout.setSpacing(10)
@@ -360,8 +386,8 @@ class ClipboardApp(QMainWindow):
         self.show_all_btn.setFixedSize(100, 40)
         self.show_all_btn.setFont(QFont("Segoe UI", 9))
         self.show_all_btn.setStyleSheet("""
-            QPushButton { background: #4CAF50; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #45a049; }
+            QPushButton { background: #333; color: white; border-radius: 5px; padding: 5px; }
+            QPushButton:hover { background: #222; }
         """)
         self.show_all_btn.clicked.connect(self.show_all)
         btn_layout.addWidget(self.show_all_btn)
@@ -370,8 +396,8 @@ class ClipboardApp(QMainWindow):
         settings_btn.setFixedSize(100, 40)
         settings_btn.setFont(QFont("Segoe UI", 9))
         settings_btn.setStyleSheet("""
-            QPushButton { background: #FFC107; color: white; border-radius: 5px; padding: 5px; }
-            QPushButton:hover { background: #FFA000; }
+            QPushButton { background: #333; color: white; border-radius: 5px; padding: 5px; }
+            QPushButton:hover { background: #222; }
         """)
         settings_btn.clicked.connect(self.open_settings)
         btn_layout.addWidget(settings_btn)
@@ -455,7 +481,7 @@ class ClipboardApp(QMainWindow):
 
             return {}
         except Exception as e:
-            logging.error(f"Failed to load settings: {e}")
+            pass
             return {}
 
     def save_settings(self, settings):
@@ -465,7 +491,7 @@ class ClipboardApp(QMainWindow):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)
-            logging.info(f"Settings saved to {path}")
+            pass
             # Keep in-memory copy in sync
             self.settings_path = path
             # If using a custom path, keep a tiny pointer in default location for discovery on next launch
@@ -474,16 +500,17 @@ class ClipboardApp(QMainWindow):
                     with open(self.default_settings_path, "w", encoding="utf-8") as pf:
                         json.dump({"settings_path": path}, pf, indent=2)
                 except Exception as pe:
-                    logging.warning(f"Failed to update settings pointer: {pe}")
+                    pass
         except Exception as e:
-            logging.error(f"Failed to save settings: {e}")
+            pass
 
     def load_clips(self):
         try:
             if not os.path.exists(self.save_path):
                 return
             files = [f for f in os.listdir(self.save_path) if f.startswith("clip_") and f.endswith(".txt")]
-            sorted_files = sorted(files, key=lambda f: self.get_timestamp_from_path(os.path.join(self.save_path, f)), reverse=True)
+            sorted_files = sorted(files, key=lambda f: self.get_timestamp_from_path(os.path.join(self.save_path, f)),
+                                  reverse=True)
             for f in sorted_files:
                 path = os.path.join(self.save_path, f)
                 with open(path, "r", encoding="utf-8") as file:
@@ -491,7 +518,7 @@ class ClipboardApp(QMainWindow):
                 if text and not any(t == text for t, _ in self.all_clips):
                     self.all_clips.append((text, path))
         except Exception as e:
-            logging.error(f"Failed to load clips: {e}")
+            pass
 
     def get_timestamp_from_path(self, file_path):
         try:
@@ -501,7 +528,7 @@ class ClipboardApp(QMainWindow):
                 return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S_%f")
             return datetime.min
         except Exception as e:
-            logging.error(f"Failed to parse timestamp from {file_path}: {e}")
+            pass
             return datetime.min
 
     def handle_item_click(self, item):
@@ -518,7 +545,7 @@ class ClipboardApp(QMainWindow):
                 self.clipboard.setText(text)
                 self.update_list()
         except Exception as e:
-            logging.error(f"Item click failed: {e}")
+            pass
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 40:
@@ -555,9 +582,9 @@ class ClipboardApp(QMainWindow):
                 f.write(text)
             self.all_clips.insert(0, (text, file_path))
             self.update_list()
-            logging.info(f"Saved clip to: {file_path}")
+            pass
         except Exception as e:
-            logging.error(f"Clipboard save failed: {e}")
+            pass
 
     def update_list(self):
         self.clip_list.clear()
@@ -587,19 +614,23 @@ class ClipboardApp(QMainWindow):
             dialog = SettingsDialog(self)
             dialog.exec()
         except Exception as e:
-            logging.error(f"Opening settings failed: {e}")
+            pass
             QMessageBox.critical(self, "Error", f"Failed to open settings: {e}")
 
     def apply_theme(self, theme):
         try:
             start_color = self.custom_color
-            end_color = "#3F51B5" if theme == "dark-blue" else "#4CAF50" if theme == "green" else "#9C27B0" if theme == "purple" else "#FFFFFF"
+            end_color = "#3F51B5" if theme == "dark-blue" else "#4CAF50" if theme == "green" else "#9C27B0" if theme == "purple" else "#212121" if theme == "dark" else "#111"
             self.text_color = "#E0E0E0" if theme != "light" else "#333333"
             self.item_bg = "rgba(255, 255, 255, 20)" if theme != "light" else "rgba(0, 0, 0, 20)"
-            self.item_widget_bg = "#1A237E" if theme != "light" else "#FFFFFF"
-            background_alpha = "255,255,255,10" if theme in ["dark-blue", "green", "purple"] else "0,0,0,10"
-            border_color = "#3E3E3E" if theme in ["dark-blue", "green", "purple"] else "#CCCCCC"
-            item_hover = "#283593" if theme == "dark-blue" else "#388E3C" if theme == "green" else "#7B1FA2" if theme == "purple" else "#B0BEC5"
+            self.item_widget_bg = "#424242" if theme == "dark" else "#1A237E" if theme != "light" else "#FFFFFF"
+            background_alpha = "33,33,33,10" if theme == "dark" else "255,255,255,10" if theme in ["dark-blue", "green",
+                                                                                                   "purple",
+                                                                                                   "dark"] else "0,0,0,10"
+            border_color = "#616161" if theme == "dark" else "#3E3E3E" if theme in ["dark-blue", "green", "purple",
+                                                                                    "dark"] else "#CCCCCC"
+            item_hover = "#616161" if theme == "dark" else "#283593" if theme == "dark-blue" else "#388E3C" if theme == "green" else "#7B1FA2" if theme == "purple" else "#B0BEC5" if theme == "dark" else "#111"
+
             self.central_widget.setStyleSheet(f"""
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start_color}, stop:1 {end_color});
                 border-radius: 15px;
@@ -620,9 +651,9 @@ class ClipboardApp(QMainWindow):
                 QPushButton:hover {{ color: #F44336; }}
             """)
             self.update_list()  # Refresh list to apply theme to items
-            logging.info(f"Applied theme: {theme}")
+            pass
         except Exception as e:
-            logging.error(f"Apply theme failed: {e}")
+            pass
 
     def update_hotkey(self, hotkey):
         try:
@@ -631,9 +662,9 @@ class ClipboardApp(QMainWindow):
             self.listener = keyboard.GlobalHotKeys({hotkey: self.on_hotkey})
             self.listener.start()
             self.hotkey = hotkey
-            logging.info(f"Updated hotkey to: {hotkey}")
+            pass
         except Exception as e:
-            logging.error(f"Hotkey update failed: {e}")
+            pass
             QMessageBox.critical(self, "Error", f"Invalid hotkey: {hotkey}")
 
     def on_hotkey(self):
@@ -641,7 +672,7 @@ class ClipboardApp(QMainWindow):
         try:
             self.toggleRequested.emit()
         except Exception as e:
-            logging.error(f"Hotkey handler error: {e}")
+            pass
 
     def toggle_window(self):
         try:
@@ -652,7 +683,7 @@ class ClipboardApp(QMainWindow):
                 self.activateWindow()  # Bring window to front
                 self.raise_()  # Ensure window is on top
         except Exception as e:
-            logging.error(f"Toggle window failed: {e}")
+            pass
 
     def show_window(self):
         # Smooth fade + slight slide-in
@@ -712,6 +743,7 @@ class ClipboardApp(QMainWindow):
             pass
         super().keyPressEvent(event)
 
+
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
@@ -720,5 +752,5 @@ if __name__ == "__main__":
         window = ClipboardApp()
         sys.exit(app.exec())
     except Exception as e:
-        logging.error(f"Application failed to start: {e}")
+        pass
         sys.exit(1)
